@@ -149,8 +149,12 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-
-
+	$U/_sleep\
+	$U/_pingpong\
+	$U/_primes\
+	$U/_find\
+	$U/_xargs\
+	
 ifeq ($(LAB),syscall)
 UPROGS += \
 	$U/_trace\
@@ -214,6 +218,9 @@ qemu: $K/kernel fs.img
 qemu-gdb: $K/kernel .gdbinit fs.img
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
+QEMU = qemu-system-riscv64
+QEMUOPTS = -machine virt -bios none -kernel kernel/kernel -m 128M -smp 3 -nographic -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+QEMUGDB = -gdb tcp::26000  # 确保使用的端口正确
 
 ##
 ##  FOR testing lab grading script
