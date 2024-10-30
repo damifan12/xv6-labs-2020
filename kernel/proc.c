@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -20,7 +21,11 @@ static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
+extern pagetable_t kernel_pagetable;
+extern pagetable_t proc_kvminit(void);
 
+extern void freewalk(pagetable_t pagetable);
+extern void uvmmap(pagetable_t pagetable, uint64 va , uint64 pa, uint64 sz, int perm);
 // initialize the proc table at boot time.
 void
 procinit(void)
@@ -121,6 +126,19 @@ found:
     return 0;
   }
 
+  p->kernel_pagetable = proc_kvminit();
+  if(p->kernel_pagetable == 0){
+    freeproc(p);
+    release(& p->lock);
+    return 0;
+  }
+
+  char *pa = kalloc();
+  if(pa == 0) 
+    panic("kalloc");
+  uint64 va = KSTACK((int)(p-proc));
+  uvmmap(p->kernel_pagetable ,va , (uint64)pa ,PGSIZE ,PTE_R | PTE_W);
+  p->kstack = va;
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -150,6 +168,22 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  uvmunmap(p->kernel_pagetable , p->kstack , 1, 1 );
+  p->kstack = 0;
+}
+void 
+proc_freekernelpt(pagetable_t kernelpt){
+  for(int i = 0 ;i < 512;++i){
+    pte_t pte = kernelpt[i];
+    if(pte& PTE_V){
+      kernelpt[i]=0;
+      if((pte&(PTE_R|PTE_W|PTE_X)) == 0){
+        uint64 child = PTE2PA(pte);
+        proc_freekernelpt((pagetable_t)child);
+      }
+    }
+  }
+  kfree((void*)kernelpt);
 }
 
 // Create a user page table for a given process,
@@ -225,6 +259,10 @@ userinit(void)
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
 
+  // 为第一个进程分配并初始化内核页表
+  p->kernel_pagetable = proc_kvminit();  // 创建内核页表
+  u2kvmcopy(p->pagetable, p->kernel_pagetable, 0, p->sz);
+
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
@@ -243,9 +281,14 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    // 添加plic限制
+    if(PGROUNDUP(sz+n) >= PLIC){
+      return -1; 
+    }
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    u2kvmcopy(p->pagetable , p->kernel_pagetable , sz-n ,sz);
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
@@ -274,7 +317,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  u2kvmcopy(np->pagetable, np->kernel_pagetable , 0, np->sz);
   np->parent = p;
 
   // copy saved user registers.
@@ -473,6 +516,10 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        proc_inithart(p->kernel_pagetable);
+
+    
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -482,6 +529,10 @@ scheduler(void)
         found = 1;
       }
       release(&p->lock);
+    }
+    if(found == 0){
+      w_satp(MAKE_SATP(kernel_pagetable));
+      sfence_vma();
     }
 #if !defined (LAB_FS)
     if(found == 0) {
@@ -697,3 +748,4 @@ procdump(void)
     printf("\n");
   }
 }
+
