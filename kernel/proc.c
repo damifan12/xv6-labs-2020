@@ -106,12 +106,22 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
-
+  p->spend  = 0;
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     release(&p->lock);
     return 0;
   }
+
+  if((p->trapframeSave = (struct trapframe*)kalloc()) == 0) {
+      freeproc(p);
+      release(&p->lock);
+      return 0;
+  }
+  p->waitReturn = 0;
+  p->alarm_interval = 0;
+  p->alarm_handler = 0;
+  p->spend = 0;
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -136,11 +146,24 @@ found:
 static void
 freeproc(struct proc *p)
 {
-  if(p->trapframe)
+  if(p->trapframe){
     kfree((void*)p->trapframe);
+  }
   p->trapframe = 0;
-  if(p->pagetable)
+  if(p->pagetable){
     proc_freepagetable(p->pagetable, p->sz);
+  }
+
+  if (p->trapframeSave) {
+      kfree((void*)p->trapframeSave);  // 释放 trapframeSave
+        // 将指针设置为 NULL，以避免悬空指针
+  }
+  p->trapframeSave = 0;
+  p->waitReturn = 0;
+  p->alarm_interval = 0;
+  p->alarm_handler = 0;
+  p->spend = 0;
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
