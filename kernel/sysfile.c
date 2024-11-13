@@ -484,3 +484,127 @@ sys_pipe(void)
   }
   return 0;
 }
+uint64
+sys_mmap(void) {
+  uint64 addr;
+  int length;
+  int prot;
+  int flags;
+  int vfd;
+  struct file* vfile;
+  int offset;
+  uint64 err = 0xffffffffffffffff;
+
+  // 获取系统调用参数
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0 ||
+    argint(3, &flags) < 0 || argfd(4, &vfd, &vfile) < 0 || argint(5, &offset) < 0)
+    return err;
+
+  // 实验提示中假定addr和offset为0，简化程序可能发生的情况
+  if(addr != 0 || offset != 0 || length < 0)
+    return err;
+
+  // 文件不可写则不允许拥有PROT_WRITE权限时映射为MAP_SHARED
+  if(vfile->writable == 0 && (prot & PROT_WRITE) != 0 && flags == MAP_SHARED)
+    return err;
+
+  struct proc* p = myproc();
+  // 没有足够的虚拟地址空间
+  if(p->sz + length > MAXVA)
+    return err;
+
+  // 遍历查找未使用的VMA结构体
+  for(int i = 0; i < NVMA; ++i) {
+    if(p->vma[i].used == 0) {
+      p->vma[i].used = 1;
+      p->vma[i].addr = p->sz;
+      p->vma[i].len = length;
+      p->vma[i].flags = flags;
+      p->vma[i].prot = prot;
+      p->vma[i].vfile = vfile;
+      p->vma[i].vfd = vfd;
+      p->vma[i].offset = offset;
+
+      // 增加文件的引用计数
+      filedup(vfile);
+
+      p->sz += length;
+      return p->vma[i].addr;
+    }
+  }
+
+  return err;
+}
+
+int mmap_handler(uint64 va, int cause){
+  struct proc* p =myproc();
+  int i;
+  for( i =0; i < NVMA; ++i){
+    if(p->vma[i].used && p->vma[i].addr <= va && va < p->vma[i].addr + p->vma[i].len){
+      break;
+    }
+  } 
+  if( i == NVMA)return -1;
+
+  struct vm_area* vma = &p->vma[i];
+  int pte_flags = PTE_U;
+  if(vma ->prot & PROT_READ) pte_flags |= PTE_R;
+  if(vma ->prot & PROT_WRITE) pte_flags|= PTE_W;
+  if (vma->prot & PROT_EXEC) pte_flags |= PTE_X;
+
+  struct file* vf = vma->vfile;
+  
+  void* pa = kalloc();
+  if (pa == 0)
+    return -1;
+  memset(pa, 0, PGSIZE);
+
+  ilock(vf->ip);
+  int offset = vma->offset + (va - vma->addr);
+  int readbytes = readi(vf->ip, 0, (uint64)pa, offset, PGSIZE);
+  iunlock(vf->ip);
+
+  if (readbytes < 0) {
+    kfree(pa);
+    return -1;
+  }
+
+  if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, pte_flags) != 0) {
+    kfree(pa);
+    return -1;
+  }
+
+  return 0;
+}
+
+
+
+uint64 sys_munmap(void) {
+  uint64 addr;
+  int length;
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0)
+    return -1;
+
+  struct proc* p = myproc();
+  int i;
+
+  for (i = 0; i < NVMA; ++i) {
+    if (p->vma[i].used && p->vma[i].addr <= addr && addr < p->vma[i].addr + p->vma[i].len) {
+      if (p->vma[i].flags == MAP_SHARED && (p->vma[i].prot & PROT_WRITE))
+        filewrite(p->vma[i].vfile, addr, length);
+      uvmunmap(p->pagetable, addr, length / PGSIZE, 1);
+      
+      if (addr == p->vma[i].addr)
+        p->vma[i].addr += length;
+      p->vma[i].len -= length;
+
+      if (p->vma[i].len == 0) {
+        fileclose(p->vma[i].vfile);
+        p->vma[i].used = 0;
+      }
+      return 0;
+    }
+  }
+
+  return -1;
+}

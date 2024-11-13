@@ -5,7 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
+extern int mmap_handler(uint64 va, int cause);
 struct spinlock tickslock;
 uint ticks;
 
@@ -65,7 +65,18 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } else if (r_scause()== 13 || r_scause()== 15){
+  #ifdef LAB_MMAP
+    uint64 fault_va = r_stval();
+    if(mmap_handler(fault_va , r_scause())!= 0){
+      p->killed =1;
+    }
+  #else
+    p->killed = 1;
+  #endif
+  }
+
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
